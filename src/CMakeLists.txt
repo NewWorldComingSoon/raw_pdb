@@ -78,4 +78,6 @@ target_precompile_headers(raw_pdb
     PDB_PCH.h
 )
 
-add_subdirectory(Examples)
+if(ENABLE_TEST) # test_mode
+	add_subdirectory(Examples)
+endif()
