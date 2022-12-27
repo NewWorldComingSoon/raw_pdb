@@ -265,7 +265,7 @@ ExampleFunctionSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbi
 
     for (auto &Sym : functionSymbols)
     {
-        printf("function symbols %s at RVA 0x%X, Size=0x%x", Sym.name.c_str(), Sym.rva, Sym.size);
+        printf("function symbols %s at RVA 0x%X, Size = 0x%x", Sym.name.c_str(), Sym.rva, Sym.size);
         if (Sym.frameProc)
         {
             auto FrameProc = Sym.frameProc;
