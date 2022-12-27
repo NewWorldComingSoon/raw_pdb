@@ -1,4 +1,4 @@
-project(Examples)
+project(raw_pdb-Examples)
 
 set(SOURCES
 	ExampleContributions.cpp
@@ -19,16 +19,16 @@ source_group(src FILES
     ${SOURCES}
 )
 
-add_executable(Examples
+add_executable(raw_pdb-Examples
     ${SOURCES}
 )
 
-target_link_libraries(Examples
+target_link_libraries(raw_pdb-Examples
   PUBLIC
     raw_pdb
 )
 
-target_precompile_headers(Examples
+target_precompile_headers(raw_pdb-Examples
   PUBLIC
     Examples_PCH.h
 )
