@@ -270,6 +270,39 @@ ExampleFunctionSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbi
         {
             auto FrameProc = Sym.frameProc;
             auto Flags = FrameProc->data.S_FRAMEPROC.flags;
+
+            if (FrameProc->data.S_FRAMEPROC.cbFrame)
+            {
+                printf("\n\t");
+                printf("count of bytes of total frame of procedure = %d\n", FrameProc->data.S_FRAMEPROC.cbFrame);
+            }
+            if (FrameProc->data.S_FRAMEPROC.cbPad)
+            {
+                printf("\n\t");
+                printf("count of bytes of padding in the frame = %d\n", FrameProc->data.S_FRAMEPROC.cbPad);
+            }
+            if (FrameProc->data.S_FRAMEPROC.offPad)
+            {
+                printf("\n\t");
+                printf(
+                    "offset (relative to frame poniter) to where padding starts = %d\n",
+                    FrameProc->data.S_FRAMEPROC.offPad);
+            }
+            if (FrameProc->data.S_FRAMEPROC.cbSaveRegs)
+            {
+                printf("\n\t");
+                printf("count of bytes of callee save registers = %d\n", FrameProc->data.S_FRAMEPROC.cbSaveRegs);
+            }
+            if (FrameProc->data.S_FRAMEPROC.offExHdlr)
+            {
+                printf("\n\t");
+                printf("offset of exception handler = 0x%X\n", FrameProc->data.S_FRAMEPROC.offExHdlr);
+            }
+            if (FrameProc->data.S_FRAMEPROC.sectExHdlr)
+            {
+                printf("\n\t");
+                printf("section id of exception handler = %d\n", FrameProc->data.S_FRAMEPROC.sectExHdlr);
+            }
             if (Flags.fHasAlloca)
             {
                 printf("\n\t");
