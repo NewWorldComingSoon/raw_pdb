@@ -143,6 +143,7 @@ ExampleFunctionSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbi
     // we haven't seen yet in any of the modules, especially for PDBs that don't provide module-specific information.
 
     // read public symbols
+    std::vector<FunctionSymbol> publicSymbols;
     TimedScope publicScope("Reading public symbol stream");
     const PDB::PublicSymbolStream publicSymbolStream = dbiStream.CreatePublicSymbolStream(rawPdbFile);
     publicScope.Done();
@@ -170,17 +171,9 @@ ExampleFunctionSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbi
                 continue;
             }
 
-            // check whether we already know this symbol from one of the module streams
-            const auto it = seenFunctionRVAs.find(rva);
-            if (it != seenFunctionRVAs.end())
-            {
-                // we know this symbol already, ignore it
-                continue;
-            }
-
             // this is a new function symbol, so store it.
             // note that we don't know its size yet.
-            functionSymbols.push_back(FunctionSymbol{record->data.S_PUB32.name, rva, 0u, nullptr});
+            publicSymbols.push_back(FunctionSymbol{record->data.S_PUB32.name, rva, 0u, nullptr});
         }
 
         scope.Done(count);
@@ -262,6 +255,20 @@ ExampleFunctionSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbi
     }
 
     total.Done(functionSymbols.size());
+
+    if (!functionSymbols.empty())
+    {
+        for (auto &functionItem : functionSymbols)
+        {
+            for (auto &publicItem : publicSymbols)
+            {
+                if (functionItem.rva == publicItem.rva)
+                {
+                    functionItem.name = publicItem.name;
+                }
+            }
+        }
+    }
 
     for (auto &Sym : functionSymbols)
     {
