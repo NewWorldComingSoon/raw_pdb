@@ -6,226 +6,242 @@
 #include "PDB_RawFile.h"
 #include "PDB_DBIStream.h"
 
-
-namespace
+namespace {
+// we don't have to store std::string in the symbols, since all the data is memory-mapped anyway.
+// we do it in this example to ensure that we don't "cheat" when reading the PDB file. memory-mapped data will only
+// be faulted into the process once it's touched, so actually copying the string data makes us touch the needed data,
+// giving us a real performance measurement.
+struct Symbol
 {
-	// we don't have to store std::string in the symbols, since all the data is memory-mapped anyway.
-	// we do it in this example to ensure that we don't "cheat" when reading the PDB file. memory-mapped data will only
-	// be faulted into the process once it's touched, so actually copying the string data makes us touch the needed data,
-	// giving us a real performance measurement.
-	struct Symbol
-	{
-		std::string name;
-		uint32_t rva;
-	};
-}
+    std::string name;
+    uint32_t rva;
+    uint32_t type;
+};
+} // namespace
 
-
-void ExampleSymbols(const PDB::RawFile& rawPdbFile, const PDB::DBIStream& dbiStream);
-void ExampleSymbols(const PDB::RawFile& rawPdbFile, const PDB::DBIStream& dbiStream)
+void
+ExampleSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbiStream);
+void
+ExampleSymbols(const PDB::RawFile &rawPdbFile, const PDB::DBIStream &dbiStream)
 {
-	TimedScope total("\nRunning example \"Symbols\"");
+    TimedScope total("\nRunning example \"Symbols\"");
 
-	// in order to keep the example easy to understand, we load the PDB data serially.
-	// note that this can be improved a lot by reading streams concurrently.
+    // in order to keep the example easy to understand, we load the PDB data serially.
+    // note that this can be improved a lot by reading streams concurrently.
 
-	// prepare the image section stream first. it is needed for converting section + offset into an RVA
-	TimedScope sectionScope("Reading image section stream");
-	const PDB::ImageSectionStream imageSectionStream = dbiStream.CreateImageSectionStream(rawPdbFile);
-	sectionScope.Done();
+    // prepare the image section stream first. it is needed for converting section + offset into an RVA
+    TimedScope sectionScope("Reading image section stream");
+    const PDB::ImageSectionStream imageSectionStream = dbiStream.CreateImageSectionStream(rawPdbFile);
+    sectionScope.Done();
 
+    // prepare the module info stream for matching contributions against files
+    TimedScope moduleScope("Reading module info stream");
+    const PDB::ModuleInfoStream moduleInfoStream = dbiStream.CreateModuleInfoStream(rawPdbFile);
+    moduleScope.Done();
 
-	// prepare the module info stream for matching contributions against files
-	TimedScope moduleScope("Reading module info stream");
-	const PDB::ModuleInfoStream moduleInfoStream = dbiStream.CreateModuleInfoStream(rawPdbFile);
-	moduleScope.Done();
+    // prepare symbol record stream needed by both public and global streams
+    TimedScope symbolStreamScope("Reading symbol record stream");
+    const PDB::CoalescedMSFStream symbolRecordStream = dbiStream.CreateSymbolRecordStream(rawPdbFile);
+    symbolStreamScope.Done();
 
+    std::vector<Symbol> symbols;
 
-	// prepare symbol record stream needed by both public and global streams
-	TimedScope symbolStreamScope("Reading symbol record stream");
-	const PDB::CoalescedMSFStream symbolRecordStream = dbiStream.CreateSymbolRecordStream(rawPdbFile);
-	symbolStreamScope.Done();
+    // read public symbols
+    TimedScope publicScope("Reading public symbol stream");
+    const PDB::PublicSymbolStream publicSymbolStream = dbiStream.CreatePublicSymbolStream(rawPdbFile);
+    publicScope.Done();
+    {
+        TimedScope scope("Storing public symbols");
 
-	std::vector<Symbol> symbols;
+        const PDB::ArrayView<PDB::HashRecord> hashRecords = publicSymbolStream.GetRecords();
+        const size_t count = hashRecords.GetLength();
 
-	// read public symbols
-	TimedScope publicScope("Reading public symbol stream");
-	const PDB::PublicSymbolStream publicSymbolStream = dbiStream.CreatePublicSymbolStream(rawPdbFile);
-	publicScope.Done();
-	{
-		TimedScope scope("Storing public symbols");
+        symbols.reserve(count);
 
-		const PDB::ArrayView<PDB::HashRecord> hashRecords = publicSymbolStream.GetRecords();
-		const size_t count = hashRecords.GetLength();
+        for (const PDB::HashRecord &hashRecord : hashRecords)
+        {
+            const PDB::CodeView::DBI::Record *record = publicSymbolStream.GetRecord(symbolRecordStream, hashRecord);
+            const uint32_t rva =
+                imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_PUB32.section, record->data.S_PUB32.offset);
+            if (rva == 0u)
+            {
+                // certain symbols (e.g. control-flow guard symbols) don't have a valid RVA, ignore those
+                continue;
+            }
 
-		symbols.reserve(count);
+            symbols.push_back(Symbol{record->data.S_PUB32.name, rva, 1});
+        }
 
-		for (const PDB::HashRecord& hashRecord : hashRecords)
-		{
-			const PDB::CodeView::DBI::Record* record = publicSymbolStream.GetRecord(symbolRecordStream, hashRecord);
-			const uint32_t rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_PUB32.section, record->data.S_PUB32.offset);
-			if (rva == 0u)
-			{
-				// certain symbols (e.g. control-flow guard symbols) don't have a valid RVA, ignore those
-				continue;
-			}
+        scope.Done(count);
+    }
 
-			symbols.push_back(Symbol { record->data.S_PUB32.name, rva });
-		}
+    // read global symbols
+    TimedScope globalScope("Reading global symbol stream");
+    const PDB::GlobalSymbolStream globalSymbolStream = dbiStream.CreateGlobalSymbolStream(rawPdbFile);
+    globalScope.Done();
+    {
+        TimedScope scope("Storing global symbols");
 
-		scope.Done(count);
-	}
+        const PDB::ArrayView<PDB::HashRecord> hashRecords = globalSymbolStream.GetRecords();
+        const size_t count = hashRecords.GetLength();
 
+        symbols.reserve(symbols.size() + count);
 
-	// read global symbols
-	TimedScope globalScope("Reading global symbol stream");
-	const PDB::GlobalSymbolStream globalSymbolStream = dbiStream.CreateGlobalSymbolStream(rawPdbFile);
-	globalScope.Done();
-	{
-		TimedScope scope("Storing global symbols");
+        for (const PDB::HashRecord &hashRecord : hashRecords)
+        {
+            const PDB::CodeView::DBI::Record *record = globalSymbolStream.GetRecord(symbolRecordStream, hashRecord);
 
-		const PDB::ArrayView<PDB::HashRecord> hashRecords = globalSymbolStream.GetRecords();
-		const size_t count = hashRecords.GetLength();
+            const char *name = nullptr;
+            uint32_t rva = 0u;
+            if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GDATA32)
+            {
+                name = record->data.S_GDATA32.name;
+                rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                    record->data.S_GDATA32.section, record->data.S_GDATA32.offset);
+            }
+            else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GTHREAD32)
+            {
+                name = record->data.S_GTHREAD32.name;
+                rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                    record->data.S_GTHREAD32.section, record->data.S_GTHREAD32.offset);
+            }
+            else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LDATA32)
+            {
+                name = record->data.S_LDATA32.name;
+                rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                    record->data.S_LDATA32.section, record->data.S_LDATA32.offset);
+            }
+            else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LTHREAD32)
+            {
+                name = record->data.S_LTHREAD32.name;
+                rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                    record->data.S_LTHREAD32.section, record->data.S_LTHREAD32.offset);
+            }
+            else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_UDT)
+            {
+                name = record->data.S_UDT.name;
+            }
+            else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_UDT_ST)
+            {
+                name = record->data.S_UDT_ST.name;
+            }
 
-		symbols.reserve(symbols.size() + count);
+            if (rva == 0u)
+            {
+                // certain symbols (e.g. control-flow guard symbols) don't have a valid RVA, ignore those
+                continue;
+            }
 
-		for (const PDB::HashRecord& hashRecord : hashRecords)
-		{
-			const PDB::CodeView::DBI::Record* record = globalSymbolStream.GetRecord(symbolRecordStream, hashRecord);
+            symbols.push_back(Symbol{name, rva, 2});
+        }
 
-			const char* name = nullptr;
-			uint32_t rva = 0u;
-			if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GDATA32)
-			{
-				name = record->data.S_GDATA32.name;
-				rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_GDATA32.section, record->data.S_GDATA32.offset);
-			}
-			else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GTHREAD32)
-			{
-				name = record->data.S_GTHREAD32.name;
-				rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_GTHREAD32.section, record->data.S_GTHREAD32.offset);
-			}
-			else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LDATA32)
-			{
-				name = record->data.S_LDATA32.name;
-				rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_LDATA32.section, record->data.S_LDATA32.offset);
-			}
-			else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LTHREAD32)
-			{
-				name = record->data.S_LTHREAD32.name;
-				rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_LTHREAD32.section, record->data.S_LTHREAD32.offset);
-			}
-			else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_UDT)
-			{
-				name = record->data.S_UDT.name;
-			}
-			else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_UDT_ST)
-			{
-				name = record->data.S_UDT_ST.name;
-			}
+        scope.Done(count);
+    }
 
-			if (rva == 0u)
-			{
-				// certain symbols (e.g. control-flow guard symbols) don't have a valid RVA, ignore those
-				continue;
-			}
+    // read module symbols
+    {
+        TimedScope scope("Storing symbols from modules");
 
-			symbols.push_back(Symbol { name, rva });
-		}
+        const PDB::ArrayView<PDB::ModuleInfoStream::Module> modules = moduleInfoStream.GetModules();
 
-		scope.Done(count);
-	}
+        for (const PDB::ModuleInfoStream::Module &module : modules)
+        {
+            if (!module.HasSymbolStream())
+            {
+                continue;
+            }
 
+            const PDB::ModuleSymbolStream moduleSymbolStream = module.CreateSymbolStream(rawPdbFile);
+            moduleSymbolStream.ForEachSymbol([&symbols, &imageSectionStream](const PDB::CodeView::DBI::Record *record) {
+                const char *name = nullptr;
+                uint32_t rva = 0u;
+                if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_THUNK32)
+                {
+                    if (record->data.S_THUNK32.thunk == PDB::CodeView::DBI::ThunkOrdinal::TrampolineIncremental)
+                    {
+                        // we have never seen incremental linking thunks stored inside a S_THUNK32 symbol, but better be
+                        // safe than sorry
+                        name = "ILT";
+                        rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                            record->data.S_THUNK32.section, record->data.S_THUNK32.offset);
+                    }
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_TRAMPOLINE)
+                {
+                    // incremental linking thunks are stored in the linker module
+                    name = "ILT";
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_TRAMPOLINE.thunkSection, record->data.S_TRAMPOLINE.thunkOffset);
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_BLOCK32)
+                {
+                    // blocks never store a name and are only stored for indicating whether other symbols are children
+                    // of this block
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LABEL32)
+                {
+                    // labels don't have a name
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LPROC32)
+                {
+                    name = record->data.S_LPROC32.name;
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_LPROC32.section, record->data.S_LPROC32.offset);
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GPROC32)
+                {
+                    name = record->data.S_GPROC32.name;
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_GPROC32.section, record->data.S_GPROC32.offset);
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LPROC32_ID)
+                {
+                    name = record->data.S_LPROC32_ID.name;
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_LPROC32_ID.section, record->data.S_LPROC32_ID.offset);
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GPROC32_ID)
+                {
+                    name = record->data.S_GPROC32_ID.name;
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_GPROC32_ID.section, record->data.S_GPROC32_ID.offset);
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_REGREL32)
+                {
+                    name = record->data.S_REGREL32.name;
+                    // You can only get the address while running the program by checking the register value and adding
+                    // the offset
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LDATA32)
+                {
+                    name = record->data.S_LDATA32.name;
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_LDATA32.section, record->data.S_LDATA32.offset);
+                }
+                else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LTHREAD32)
+                {
+                    name = record->data.S_LTHREAD32.name;
+                    rva = imageSectionStream.ConvertSectionOffsetToRVA(
+                        record->data.S_LTHREAD32.section, record->data.S_LTHREAD32.offset);
+                }
 
-	// read module symbols
-	{
-		TimedScope scope("Storing symbols from modules");
+                if (rva == 0u)
+                {
+                    // certain symbols (e.g. control-flow guard symbols) don't have a valid RVA, ignore those
+                    return;
+                }
 
-		const PDB::ArrayView<PDB::ModuleInfoStream::Module> modules = moduleInfoStream.GetModules();
+                symbols.push_back(Symbol{name, rva, 3});
+            });
+        }
 
-		for (const PDB::ModuleInfoStream::Module& module : modules)
-		{
-			if (!module.HasSymbolStream())
-			{
-				continue;
-			}
+        scope.Done(modules.GetLength());
+    }
 
-			const PDB::ModuleSymbolStream moduleSymbolStream = module.CreateSymbolStream(rawPdbFile);
-			moduleSymbolStream.ForEachSymbol([&symbols, &imageSectionStream](const PDB::CodeView::DBI::Record* record)
-			{
-				const char* name = nullptr;
-				uint32_t rva = 0u;
-				if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_THUNK32)
-				{
-					if (record->data.S_THUNK32.thunk == PDB::CodeView::DBI::ThunkOrdinal::TrampolineIncremental)
-					{
-						// we have never seen incremental linking thunks stored inside a S_THUNK32 symbol, but better be safe than sorry
-						name = "ILT";
-						rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_THUNK32.section, record->data.S_THUNK32.offset);
-					}
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_TRAMPOLINE)
-				{
-					// incremental linking thunks are stored in the linker module
-					name = "ILT";
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_TRAMPOLINE.thunkSection, record->data.S_TRAMPOLINE.thunkOffset);
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_BLOCK32)
-				{
-					// blocks never store a name and are only stored for indicating whether other symbols are children of this block
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LABEL32)
-				{
-					// labels don't have a name
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LPROC32)
-				{
-					name = record->data.S_LPROC32.name;
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_LPROC32.section, record->data.S_LPROC32.offset);
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GPROC32)
-				{
-					name = record->data.S_GPROC32.name;
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_GPROC32.section, record->data.S_GPROC32.offset);
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LPROC32_ID)
-				{
-					name = record->data.S_LPROC32_ID.name;
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_LPROC32_ID.section, record->data.S_LPROC32_ID.offset);
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_GPROC32_ID)
-				{
-					name = record->data.S_GPROC32_ID.name;
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_GPROC32_ID.section, record->data.S_GPROC32_ID.offset);
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_REGREL32)
-				{
-					name = record->data.S_REGREL32.name;
-					// You can only get the address while running the program by checking the register value and adding the offset
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LDATA32)
-				{
-					name = record->data.S_LDATA32.name;
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_LDATA32.section, record->data.S_LDATA32.offset);
-				}
-				else if (record->header.kind == PDB::CodeView::DBI::SymbolRecordKind::S_LTHREAD32)
-				{
-					name = record->data.S_LTHREAD32.name;
-					rva = imageSectionStream.ConvertSectionOffsetToRVA(record->data.S_LTHREAD32.section, record->data.S_LTHREAD32.offset);
-				}
+    total.Done(symbols.size());
 
-				if (rva == 0u)
-				{
-					// certain symbols (e.g. control-flow guard symbols) don't have a valid RVA, ignore those
-					return;
-				}
-
-				symbols.push_back(Symbol { name, rva });
-			});
-		}
-
-		scope.Done(modules.GetLength());
-	}
-
-	total.Done(symbols.size());
+    for (auto &Sym : symbols)
+    {
+        printf("function symbols %s at RVA 0x%X, Type=%d\n", Sym.name.c_str(), Sym.rva, Sym.type);
+    }
 }
